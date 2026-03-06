@@ -1,0 +1,39 @@
+name: Build Ladybird for Windows (.exe)
+
+on: [push, pull_request]
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install Dependencies via Chocolatey
+        # The instructions specify installing pkgconfiglite via choco.
+        # GitHub's windows-latest runner comes with Chocolatey pre-installed.
+        run: |
+          choco install pkgconfiglite -y
+          
+      - name: Set up Visual Studio Command Prompt
+        # This action sets up the environment variables to use the VS MSVC / Clang-CL compiler
+        uses: ilammy/msvc-dev-cmd@v1
+
+      - name: Build Ladybird
+        # The instructions state to build using the python script in a VS command prompt
+        run: |
+          py Meta\ladybird.py build
+
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Ladybird-Windows-exe
+          # Note: You will need to verify the exact output path of the .exe 
+          # It is typically placed in Build\release\bin\ according to the docs
+          path: Build\release\bin\*.exe
