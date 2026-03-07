@@ -33,7 +33,7 @@ jobs:
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: Ladybird-Windows-exe
+          name: Ladybird-Windows-Build
           # Note: You will need to verify the exact output path of the .exe 
           # It is typically placed in Build\release\bin\ according to the docs
-          path: Build\release\bin\*.exe
+          path: Build\release\bin\
