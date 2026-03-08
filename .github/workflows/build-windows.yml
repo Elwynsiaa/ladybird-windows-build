@@ -26,14 +26,17 @@ jobs:
         uses: ilammy/msvc-dev-cmd@v1
 
       - name: Build Ladybird
-        # The instructions state to build using the python script in a VS command prompt
         run: |
           py Meta\ladybird.py build
+
+      # Add this new step! It gathers all required files into a folder named "ladybird-install"
+      - name: Install Ladybird
+        run: |
+          cmake --install Build\release --prefix ladybird-install
 
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
           name: Ladybird-Windows-Build
-          # Note: You will need to verify the exact output path of the .exe 
-          # It is typically placed in Build\release\bin\ according to the docs
-          path: Build\release\bin\
+          # Point the uploader to the new install folder containing everything
+          path: ladybird-install\
