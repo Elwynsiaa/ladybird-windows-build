@@ -40,7 +40,7 @@ jobs:
           Copy-Item "Build\release\vcpkg_installed\x64-windows\bin\*.dll" -Destination "ladybird-install\bin" -Force
           
           # Qt applications also require the "platforms" folder to open a window
-          Copy-Item "Build\release\vcpkg_installed\x64-windows\plugins\*" -Destination "ladybird-install\bin" -Recurse -Force
+          Copy-Item "Build\release\vcpkg_installed\x64-windows\Qt6\plugins\*" -Destination "ladybird-install\bin" -Recurse -Force
 
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
