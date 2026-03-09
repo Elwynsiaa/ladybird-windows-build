@@ -46,7 +46,7 @@ jobs:
           VCPKG_CACHE_SAS: ${{ github.ref == 'refs/heads/master' && secrets.VCPKG_CACHE_SAS || '' }}
           VCPKG_CACHE_MODE: ${{ github.ref == 'refs/heads/master' && 'write' || '' }}
         run: |
-          cmake --preset Windows_CI -B Build `
+          cmake --preset Release -B Build `
             -DENABLE_CI_BASELINE_CPU=ON `
             -DENABLE_TESTS=OFF `
             -DBUILD_TESTING=OFF `
