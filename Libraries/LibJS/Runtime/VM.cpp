@@ -14,6 +14,7 @@
 #include <AK/StringBuilder.h>
 #include <AK/Time.h>
 #include <LibFileSystem/FileSystem.h>
+#include <LibJS/Bytecode/Executable.h>
 #include <LibJS/Bytecode/Interpreter.h>
 #include <LibJS/Runtime/AbstractOperations.h>
 #include <LibJS/Runtime/Array.h>
@@ -79,6 +80,10 @@ VM::VM(ErrorMessages error_messages)
     s_the = this;
     m_bytecode_interpreter = make<Bytecode::Interpreter>();
 
+    m_heap.register_sweep_callback([] {
+        Bytecode::StaticPropertyLookupCache::sweep_all();
+    });
+
     m_empty_string = m_heap.allocate<PrimitiveString>(String {});
 
     cached_strings = {
@@ -111,6 +116,10 @@ VM::VM(ErrorMessages error_messages)
 
     host_enqueue_promise_job = [this](GC::Ref<GC::Function<ThrowCompletionOr<Value>()>> job, Realm* realm) {
         enqueue_promise_job(job, realm);
+    };
+
+    host_promise_job_queue_is_empty = [this]() -> bool {
+        return m_promise_jobs.is_empty();
     };
 
     host_make_job_callback = [](FunctionObject& function_object) {
@@ -792,30 +801,17 @@ void VM::load_imported_module(ImportedModuleReferrer referrer, ModuleRequest con
     finish_loading_imported_module(referrer, module_request, payload, module);
 }
 
-static GC::Ptr<CachedSourceRange> get_source_range(ExecutionContext* context)
+Vector<StackTraceElement> VM::stack_trace() const
 {
-    // native function
-    if (!context->executable)
-        return {};
-
-    if (!context->cached_source_range
-        || context->cached_source_range->program_counter != context->program_counter) {
-        auto unrealized_source_range = context->executable->source_range_at(context->program_counter);
-        context->cached_source_range = context->executable->heap().allocate<CachedSourceRange>(
-            context->program_counter,
-            move(unrealized_source_range));
-    }
-    return context->cached_source_range;
-}
-
-GC::ConservativeVector<StackTraceElement> VM::stack_trace() const
-{
-    GC::ConservativeVector<StackTraceElement> stack_trace(heap());
+    Vector<StackTraceElement> stack_trace;
     stack_trace.ensure_capacity(m_execution_context_stack.size());
     for (auto* context : m_execution_context_stack.in_reverse()) {
+        Optional<SourceRange> source_range;
+        if (context->executable)
+            source_range = context->executable->get_source_range(context->program_counter);
         stack_trace.append({
             .execution_context = context,
-            .source_range = get_source_range(context),
+            .source_range = move(source_range),
         });
     }
 

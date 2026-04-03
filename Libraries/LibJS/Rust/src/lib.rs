@@ -113,7 +113,6 @@ pub struct ParsedProgram {
     has_top_level_await: bool,
     errors: Vec<ParseError>,
     ast_dump: Option<Vec<u8>>,
-    deferred_regexes: Vec<parser::DeferredRegex>,
 }
 
 // SAFETY: Full ownership transfer between threads, never concurrent access.
@@ -188,13 +187,15 @@ unsafe fn source_from_raw<'a>(source: *const u16, len: usize) -> Option<&'a [u16
 }
 
 /// Callback type for reporting parse errors to C++.
-type ParseErrorCallback = unsafe extern "C" fn(
-    ctx: *mut c_void,
-    message: *const u8,
-    message_len: usize,
-    line: u32,
-    column: u32,
-);
+pub type ParseErrorCallback = Option<
+    unsafe extern "C" fn(
+        ctx: *mut c_void,
+        message: *const u8,
+        message_len: usize,
+        line: u32,
+        column: u32,
+    ) -> (),
+>;
 
 /// Log parser and scope collector errors, returning true if any were found.
 fn check_errors(parser: &mut Parser) -> bool {
@@ -205,7 +206,7 @@ fn check_errors(parser: &mut Parser) -> bool {
 fn check_errors_with_callback(
     parser: &mut Parser,
     error_context: *mut c_void,
-    error_callback: Option<ParseErrorCallback>,
+    error_callback: ParseErrorCallback,
 ) -> bool {
     if parser.has_errors() {
         if let Some(cb) = error_callback {
@@ -356,12 +357,6 @@ pub unsafe extern "C" fn rust_compile_program(
 
             let program = parser.parse_program(starts_in_strict_mode);
 
-            // Compile deferred regex literals.
-            let regex_errors = Parser::compile_deferred_regexes(parser.take_deferred_regexes());
-            if !regex_errors.is_empty() {
-                return std::ptr::null_mut();
-            }
-
             if check_errors(&mut parser) {
                 return std::ptr::null_mut();
             }
@@ -462,8 +457,6 @@ pub unsafe extern "C" fn rust_parse_program(
                 (scope, false, false)
             };
 
-            let deferred_regexes = parser.take_deferred_regexes();
-
             let parsed = ParsedProgram {
                 program,
                 function_table: std::mem::take(&mut parser.function_table),
@@ -472,7 +465,6 @@ pub unsafe extern "C" fn rust_parse_program(
                 has_top_level_await: has_tla,
                 errors,
                 ast_dump: None,
-                deferred_regexes,
             };
 
             Box::into_raw(Box::new(parsed))
@@ -492,7 +484,7 @@ pub unsafe extern "C" fn rust_parsed_program_has_errors(parsed: *const ParsedPro
 /// Report parse errors from a ParsedProgram via callback, then clear them.
 ///
 /// Calls `error_callback` for each error with the same signature as
-/// `RustParseErrorCallback`.
+/// `ParseErrorCallback`.
 ///
 /// # Safety
 /// - `parsed` must be a valid pointer from `rust_parse_program()`.
@@ -507,27 +499,8 @@ pub unsafe extern "C" fn rust_parsed_program_take_errors(
         let parsed = &mut *parsed;
         for err in parsed.errors.drain(..) {
             let msg = err.message.as_bytes();
-            error_callback(error_context, msg.as_ptr(), msg.len(), err.line, err.column);
+            error_callback.unwrap()(error_context, msg.as_ptr(), msg.len(), err.line, err.column);
         }
-    }
-}
-
-/// Compile deferred regex literals in a ParsedProgram.
-///
-/// Must be called on the main thread (LibRegex is not thread-safe).
-/// Any regex compilation errors are added to the ParsedProgram's error list,
-/// so the caller should check `rust_parsed_program_has_errors()` afterwards.
-///
-/// # Safety
-/// `parsed` must be a valid pointer from `rust_parse_program()`.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn rust_parsed_program_compile_regexes(parsed: *mut ParsedProgram) {
-    unsafe {
-        let parsed = &mut *parsed;
-        let deferred = std::mem::take(&mut parsed.deferred_regexes);
-        parsed
-            .errors
-            .extend(Parser::compile_deferred_regexes(deferred));
     }
 }
 
@@ -618,71 +591,6 @@ pub unsafe extern "C" fn rust_compile_parsed_script(
     }
 }
 
-/// Compile a script and extract GDI (GlobalDeclarationInstantiation) metadata.
-///
-/// This is the combined parse+compile path for scripts. Internally calls
-/// `rust_parse_program()` + `rust_compile_parsed_script()`.
-///
-/// Returns the `Executable*` as `void*`, or nullptr on failure.
-///
-/// # Safety
-/// - `source` must point to a valid UTF-16 buffer of `source_len` elements.
-/// - `vm_ptr` must be a valid `JS::VM*`.
-/// - `source_code_ptr` must be a valid `JS::SourceCode const*`.
-/// - `gdi_context` must be a valid pointer to a C++ ScriptGdiBuilder.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn rust_compile_script(
-    source: *const u16,
-    source_len: usize,
-    vm_ptr: *mut c_void,
-    source_code_ptr: *const c_void,
-    gdi_context: *mut c_void,
-    dump_ast: bool,
-    use_color: bool,
-    error_context: *mut c_void,
-    error_callback: Option<ParseErrorCallback>,
-    ast_dump_output: *mut *mut u8,
-    ast_dump_output_len: *mut usize,
-    initial_line_number: usize,
-) -> *mut c_void {
-    unsafe {
-        abort_on_panic(|| {
-            let parsed = rust_parse_program(
-                source,
-                source_len,
-                0,
-                initial_line_number,
-                dump_ast,
-                use_color,
-            );
-
-            if parsed.is_null() {
-                return std::ptr::null_mut();
-            }
-
-            // Compile deferred regex literals before checking for errors.
-            rust_parsed_program_compile_regexes(parsed);
-
-            if rust_parsed_program_has_errors(parsed) {
-                if let Some(cb) = error_callback {
-                    rust_parsed_program_take_errors(parsed, error_context, cb);
-                }
-                rust_free_parsed_program(parsed);
-                return std::ptr::null_mut();
-            }
-
-            write_ast_dump_output(
-                &(*parsed).program,
-                &(*parsed).function_table,
-                ast_dump_output,
-                ast_dump_output_len,
-            );
-
-            rust_compile_parsed_script(parsed, vm_ptr, source_code_ptr, gdi_context, source_len)
-        })
-    }
-}
-
 /// Compile an eval script and extract EDI (EvalDeclarationInstantiation) metadata.
 ///
 /// This is the path for eval(). It:
@@ -712,7 +620,7 @@ pub unsafe extern "C" fn rust_compile_eval(
     allow_super_constructor_call: bool,
     in_class_field_initializer: bool,
     error_context: *mut c_void,
-    error_callback: Option<ParseErrorCallback>,
+    error_callback: ParseErrorCallback,
     ast_dump_output: *mut *mut u8,
     ast_dump_output_len: *mut usize,
 ) -> *mut c_void {
@@ -729,18 +637,6 @@ pub unsafe extern "C" fn rust_compile_eval(
             parser.flags.in_class_field_initializer = in_class_field_initializer;
 
             let program = parser.parse_program(starts_in_strict_mode);
-
-            // Compile deferred regex literals.
-            let regex_errors = Parser::compile_deferred_regexes(parser.take_deferred_regexes());
-            if !regex_errors.is_empty() {
-                if let Some(cb) = error_callback {
-                    for err in &regex_errors {
-                        let msg = err.message.as_bytes();
-                        cb(error_context, msg.as_ptr(), msg.len(), err.line, err.column);
-                    }
-                }
-                return std::ptr::null_mut();
-            }
 
             if check_errors_with_callback(&mut parser, error_context, error_callback) {
                 return std::ptr::null_mut();
@@ -818,7 +714,7 @@ pub unsafe extern "C" fn rust_compile_dynamic_function(
     source_code_ptr: *const c_void,
     function_kind: u8,
     error_context: *mut c_void,
-    error_callback: Option<ParseErrorCallback>,
+    error_callback: ParseErrorCallback,
     ast_dump_output: *mut *mut u8,
     ast_dump_output_len: *mut usize,
 ) -> *mut c_void {
@@ -870,16 +766,16 @@ pub unsafe extern "C" fn rust_compile_dynamic_function(
                 let mut validate_src: Vec<u16> = Vec::new();
                 match kind {
                     ast::FunctionKind::Generator => {
-                        validate_src.extend_from_slice(utf16!("function* test("))
+                        validate_src.extend_from_slice(utf16!("function* test("));
                     }
                     ast::FunctionKind::Async => {
-                        validate_src.extend_from_slice(utf16!("async function test("))
+                        validate_src.extend_from_slice(utf16!("async function test("));
                     }
                     ast::FunctionKind::AsyncGenerator => {
-                        validate_src.extend_from_slice(utf16!("async function* test("))
+                        validate_src.extend_from_slice(utf16!("async function* test("));
                     }
                     ast::FunctionKind::Normal => {
-                        validate_src.extend_from_slice(utf16!("function test("))
+                        validate_src.extend_from_slice(utf16!("function test("));
                     }
                 }
                 validate_src.extend_from_slice(parameters_slice);
@@ -902,6 +798,7 @@ pub unsafe extern "C" fn rust_compile_dynamic_function(
                 };
                 let mut parser = Parser::new(body_slice, ProgramType::Script);
                 parser.flags.in_function_context = true;
+                parser.flags.new_target_is_valid = true;
                 match kind {
                     ast::FunctionKind::Async | ast::FunctionKind::AsyncGenerator => {
                         parser.flags.await_expression_is_valid = true;
@@ -925,18 +822,6 @@ pub unsafe extern "C" fn rust_compile_dynamic_function(
             };
             let mut parser = Parser::new(full_slice, ProgramType::Script);
             let program = parser.parse_program(false);
-
-            // Compile deferred regex literals.
-            let regex_errors = Parser::compile_deferred_regexes(parser.take_deferred_regexes());
-            if !regex_errors.is_empty() {
-                if let Some(cb) = error_callback {
-                    for err in &regex_errors {
-                        let msg = err.message.as_bytes();
-                        cb(error_context, msg.as_ptr(), msg.len(), err.line, err.column);
-                    }
-                }
-                return std::ptr::null_mut();
-            }
 
             if check_errors_with_callback(&mut parser, error_context, error_callback) {
                 return std::ptr::null_mut();
@@ -969,7 +854,7 @@ pub unsafe extern "C" fn rust_compile_dynamic_function(
             let function_id = if let StatementKind::Program(ref data) = program.inner {
                 let scope = data.scope.borrow();
                 scope.children.iter().find_map(|child| match &child.inner {
-                    StatementKind::FunctionDeclaration { function_id, .. } => Some(*function_id),
+                    StatementKind::FunctionDeclaration(fd) => Some(fd.function_id),
                     StatementKind::Expression(expression) => {
                         if let ast::ExpressionKind::Function(function_id) = &expression.inner {
                             Some(*function_id)
@@ -1050,16 +935,6 @@ pub unsafe extern "C" fn rust_compile_builtin_file(
             let mut parser = Parser::new(source_slice, ProgramType::Script);
             let program = parser.parse_program(true); // strict mode
 
-            // Compile deferred regex literals.
-            let regex_errors = Parser::compile_deferred_regexes(parser.take_deferred_regexes());
-            if !regex_errors.is_empty() {
-                let errors: Vec<String> = regex_errors
-                    .iter()
-                    .map(|e| format!("{}:{}: {}", e.line, e.column, e.message))
-                    .collect();
-                panic!("Regex errors in builtin file: {}", errors.join("; "));
-            }
-
             if parser.has_errors() {
                 let errors: Vec<String> = parser
                     .errors()
@@ -1086,13 +961,8 @@ pub unsafe extern "C" fn rust_compile_builtin_file(
 
             let scope = scope_ref.borrow();
             for child in &scope.children {
-                if let StatementKind::FunctionDeclaration {
-                    function_id,
-                    ref name,
-                    ..
-                } = child.inner
-                {
-                    let function_data = parser.function_table.take(function_id);
+                if let StatementKind::FunctionDeclaration(ref fd) = child.inner {
+                    let function_data = parser.function_table.take(fd.function_id);
                     let subtable = parser.function_table.extract_reachable(&function_data);
                     let sfd_ptr = bytecode::ffi::create_sfd_for_gdi(
                         function_data,
@@ -1102,7 +972,7 @@ pub unsafe extern "C" fn rust_compile_builtin_file(
                         true, // strict
                     );
                     if !sfd_ptr.is_null()
-                        && let Some(name_ident) = name
+                        && let Some(name_ident) = &fd.name
                     {
                         push_function(
                             ctx,
@@ -1292,8 +1162,8 @@ unsafe fn call_export_callback(
     callback: ModuleExportEntryCallback,
     ctx: *mut c_void,
     kind: u8,
-    export_name: &Option<ast::Utf16String>,
-    local_or_import_name: &Option<ast::Utf16String>,
+    export_name: Option<&ast::Utf16String>,
+    local_or_import_name: Option<&ast::Utf16String>,
     module_request: Option<&ast::ModuleRequest>,
 ) {
     unsafe {
@@ -1362,7 +1232,7 @@ pub unsafe extern "C" fn rust_compile_module(
     dump_ast: bool,
     use_color: bool,
     error_context: *mut c_void,
-    error_callback: Option<ParseErrorCallback>,
+    error_callback: ParseErrorCallback,
     tla_executable_out: *mut *mut c_void,
     ast_dump_output: *mut *mut u8,
     ast_dump_output_len: *mut usize,
@@ -1375,12 +1245,9 @@ pub unsafe extern "C" fn rust_compile_module(
                 return std::ptr::null_mut();
             }
 
-            // Compile deferred regex literals before checking for errors.
-            rust_parsed_program_compile_regexes(parsed);
-
             if rust_parsed_program_has_errors(parsed) {
                 if let Some(cb) = error_callback {
-                    rust_parsed_program_take_errors(parsed, error_context, cb);
+                    rust_parsed_program_take_errors(parsed, error_context, Some(cb));
                 }
                 rust_free_parsed_program(parsed);
                 return std::ptr::null_mut();
@@ -1456,9 +1323,7 @@ unsafe fn extract_module_metadata(scope: &ast::ScopeData, ctx: *mut c_void, cb: 
 
         // Process export entries (matching SourceTextModule::parse steps 9-10).
         for child in &scope.children {
-            let export_data = if let StatementKind::Export(ref data) = child.inner {
-                data
-            } else {
+            let StatementKind::Export(ref export_data) = child.inner else {
                 continue;
             };
 
@@ -1470,8 +1335,7 @@ unsafe fn extract_module_metadata(scope: &ast::ScopeData, ctx: *mut c_void, cb: 
                 let is_declaration = export_data.statement.as_ref().is_some_and(|s| {
                     matches!(
                         s.inner,
-                        StatementKind::FunctionDeclaration { .. }
-                            | StatementKind::ClassDeclaration(_)
+                        StatementKind::FunctionDeclaration(_) | StatementKind::ClassDeclaration(_)
                     )
                 });
                 if !is_declaration && let Some(ref name) = entry.local_or_import_name {
@@ -1499,8 +1363,8 @@ unsafe fn extract_module_metadata(scope: &ast::ScopeData, ctx: *mut c_void, cb: 
                                 cb.push_local_export,
                                 ctx,
                                 entry.kind as u8,
-                                &entry.export_name,
-                                &entry.local_or_import_name,
+                                entry.export_name.as_ref(),
+                                entry.local_or_import_name.as_ref(),
                                 None,
                             );
                         } else {
@@ -1509,8 +1373,8 @@ unsafe fn extract_module_metadata(scope: &ast::ScopeData, ctx: *mut c_void, cb: 
                                 cb.push_indirect_export,
                                 ctx,
                                 ExportEntryKind::NamedExport as u8,
-                                &entry.export_name,
-                                &import_entry.import_name,
+                                entry.export_name.as_ref(),
+                                import_entry.import_name.as_ref(),
                                 Some(&import_entry.module_request),
                             );
                         }
@@ -1520,8 +1384,8 @@ unsafe fn extract_module_metadata(scope: &ast::ScopeData, ctx: *mut c_void, cb: 
                             cb.push_local_export,
                             ctx,
                             entry.kind as u8,
-                            &entry.export_name,
-                            &entry.local_or_import_name,
+                            entry.export_name.as_ref(),
+                            entry.local_or_import_name.as_ref(),
                             None,
                         );
                     }
@@ -1531,8 +1395,8 @@ unsafe fn extract_module_metadata(scope: &ast::ScopeData, ctx: *mut c_void, cb: 
                         cb.push_star_export,
                         ctx,
                         entry.kind as u8,
-                        &entry.export_name,
-                        &entry.local_or_import_name,
+                        entry.export_name.as_ref(),
+                        entry.local_or_import_name.as_ref(),
                         export_data.module_request.as_ref(),
                     );
                 } else {
@@ -1541,8 +1405,8 @@ unsafe fn extract_module_metadata(scope: &ast::ScopeData, ctx: *mut c_void, cb: 
                         cb.push_indirect_export,
                         ctx,
                         entry.kind as u8,
-                        &entry.export_name,
-                        &entry.local_or_import_name,
+                        entry.export_name.as_ref(),
+                        entry.local_or_import_name.as_ref(),
                         export_data.module_request.as_ref(),
                     );
                 }
@@ -1585,13 +1449,11 @@ unsafe fn extract_module_declarations(
             };
 
             match declaration {
-                StatementKind::FunctionDeclaration {
-                    function_id, name, ..
-                } => {
+                StatementKind::FunctionDeclaration(fd) => {
                     let is_default =
-                        is_exported && name.as_ref().is_some_and(|n| n.name == default_name);
+                        is_exported && fd.name.as_ref().is_some_and(|n| n.name == default_name);
 
-                    let function_data = function_table.take(*function_id);
+                    let function_data = function_table.take(fd.function_id);
                     let subtable = function_table.extract_reachable(&function_data);
                     let sfd_ptr = bytecode::ffi::create_sfd_for_gdi(
                         function_data,
@@ -1605,7 +1467,7 @@ unsafe fn extract_module_declarations(
                     }
 
                     // Get the binding name from the AST (e.g., "*default*" for anonymous defaults).
-                    let binding_name = if let Some(name_ident) = name {
+                    let binding_name = if let Some(name_ident) = &fd.name {
                         name_ident.name.clone()
                     } else {
                         continue;
@@ -1649,11 +1511,9 @@ unsafe fn extract_module_declarations(
                         );
                     }
                 }
-                StatementKind::VariableDeclaration { kind, declarations }
-                    if *kind != ast::DeclarationKind::Var =>
-                {
-                    let is_constant = *kind == ast::DeclarationKind::Const;
-                    for declaration in declarations {
+                StatementKind::VariableDeclaration(vd) if vd.kind != ast::DeclarationKind::Var => {
+                    let is_constant = vd.kind == ast::DeclarationKind::Const;
+                    for declaration in &vd.declarations {
                         for_each_bound_name(&declaration.target, &mut |name| {
                             (cb.push_lexical_binding)(
                                 ctx,
@@ -1665,8 +1525,8 @@ unsafe fn extract_module_declarations(
                         });
                     }
                 }
-                StatementKind::UsingDeclaration { declarations } => {
-                    for declaration in declarations {
+                StatementKind::UsingDeclaration(declarations) => {
+                    for declaration in declarations.iter() {
                         for_each_bound_name(&declaration.target, &mut |name| {
                             (cb.push_lexical_binding)(ctx, name.as_ptr(), name.len(), false, -1);
                         });
@@ -1686,11 +1546,8 @@ unsafe fn collect_module_var_names(
 ) {
     unsafe {
         match statement {
-            ast::StatementKind::VariableDeclaration {
-                kind: ast::DeclarationKind::Var,
-                declarations,
-            } => {
-                for declaration in declarations {
+            ast::StatementKind::VariableDeclaration(vd) if vd.kind == ast::DeclarationKind::Var => {
+                for declaration in &vd.declarations {
                     for_each_bound_name(&declaration.target, &mut |name| {
                         push_var_name(ctx, name.as_ptr(), name.len());
                     });
@@ -1850,11 +1707,8 @@ unsafe extern "C" {
 /// statements, excluding function/class bodies (which create new var scopes).
 fn collect_var_names_recursive(statement: &ast::StatementKind, push_name: &mut dyn FnMut(&[u16])) {
     match statement {
-        ast::StatementKind::VariableDeclaration {
-            kind: ast::DeclarationKind::Var,
-            declarations,
-        } => {
-            for declaration in declarations {
+        ast::StatementKind::VariableDeclaration(vd) if vd.kind == ast::DeclarationKind::Var => {
+            for declaration in &vd.declarations {
                 for_each_bound_name(&declaration.target, push_name);
             }
         }
@@ -1889,10 +1743,8 @@ fn extract_gdi_common(
     // Var names (var declarations at any nesting level + top-level function declarations)
     for child in &scope.children {
         collect_var_names_recursive(&child.inner, push_var_name);
-        if let StatementKind::FunctionDeclaration {
-            name: Some(ref name_ident),
-            ..
-        } = child.inner
+        if let StatementKind::FunctionDeclaration(ref fd) = child.inner
+            && let Some(ref name_ident) = fd.name
         {
             push_var_name(&name_ident.name);
         }
@@ -1902,14 +1754,11 @@ fn extract_gdi_common(
     let mut seen_names: HashSet<ast::Utf16String> = HashSet::new();
     let mut functions_to_init: Vec<(ast::FunctionId, ast::Utf16String)> = Vec::new();
     for child in scope.children.iter().rev() {
-        if let StatementKind::FunctionDeclaration {
-            function_id,
-            name: Some(ref name_ident),
-            ..
-        } = child.inner
+        if let StatementKind::FunctionDeclaration(ref fd) = child.inner
+            && let Some(ref name_ident) = fd.name
             && seen_names.insert(name_ident.name.clone())
         {
-            functions_to_init.push((function_id, name_ident.name.clone()));
+            functions_to_init.push((fd.function_id, name_ident.name.clone()));
         }
     }
     for (function_id, name) in &functions_to_init {
@@ -1939,18 +1788,16 @@ fn extract_gdi_common(
 
     for child in &scope.children {
         match &child.inner {
-            StatementKind::VariableDeclaration { kind, declarations }
-                if *kind != DeclarationKind::Var =>
-            {
-                let is_constant = *kind == DeclarationKind::Const;
-                for declaration in declarations {
+            StatementKind::VariableDeclaration(vd) if vd.kind != DeclarationKind::Var => {
+                let is_constant = vd.kind == DeclarationKind::Const;
+                for declaration in &vd.declarations {
                     for_each_bound_name(&declaration.target, &mut |name| {
                         push_lexical_binding(name, is_constant);
                     });
                 }
             }
-            StatementKind::UsingDeclaration { declarations } => {
-                for declaration in declarations {
+            StatementKind::UsingDeclaration(declarations) => {
+                for declaration in declarations.iter() {
                     for_each_bound_name(&declaration.target, &mut |name| {
                         push_lexical_binding(name, false);
                     });
@@ -1994,7 +1841,7 @@ unsafe fn extract_eval_gdi(
             &mut |name| eval_gdi_push_var_scoped_name(ctx, name.as_ptr(), name.len()),
             &mut |name| eval_gdi_push_annex_b_name(ctx, name.as_ptr(), name.len()),
             &mut |name, is_const| {
-                eval_gdi_push_lexical_binding(ctx, name.as_ptr(), name.len(), is_const)
+                eval_gdi_push_lexical_binding(ctx, name.as_ptr(), name.len(), is_const);
             },
             function_table,
         );
@@ -2022,17 +1869,15 @@ unsafe fn extract_script_gdi(
         // Lexical names (let/const/using/class at top level) — script-only step.
         for child in &scope.children {
             match &child.inner {
-                StatementKind::VariableDeclaration { kind, declarations }
-                    if *kind != DeclarationKind::Var =>
-                {
-                    for declaration in declarations {
+                StatementKind::VariableDeclaration(vd) if vd.kind != DeclarationKind::Var => {
+                    for declaration in &vd.declarations {
                         for_each_bound_name(&declaration.target, &mut |name| {
                             script_gdi_push_lexical_name(ctx, name.as_ptr(), name.len());
                         });
                     }
                 }
-                StatementKind::UsingDeclaration { declarations } => {
-                    for declaration in declarations {
+                StatementKind::UsingDeclaration(declarations) => {
+                    for declaration in declarations.iter() {
                         for_each_bound_name(&declaration.target, &mut |name| {
                             script_gdi_push_lexical_name(ctx, name.as_ptr(), name.len());
                         });
@@ -2057,7 +1902,7 @@ unsafe fn extract_script_gdi(
             &mut |name| script_gdi_push_var_scoped_name(ctx, name.as_ptr(), name.len()),
             &mut |name| script_gdi_push_annex_b_name(ctx, name.as_ptr(), name.len()),
             &mut |name, is_const| {
-                script_gdi_push_lexical_binding(ctx, name.as_ptr(), name.len(), is_const)
+                script_gdi_push_lexical_binding(ctx, name.as_ptr(), name.len(), is_const);
             },
             function_table,
         );
@@ -2078,32 +1923,32 @@ fn for_each_child_statement(
                 f(&child.inner);
             }
         }
-        StatementKind::If {
-            consequent,
-            alternate,
-            ..
-        } => {
-            f(&consequent.inner);
-            if let Some(alt) = alternate {
+        StatementKind::If(data) => {
+            f(&data.consequent.inner);
+            if let Some(alt) = &data.alternate {
                 f(&alt.inner);
             }
         }
-        StatementKind::While { body, .. }
-        | StatementKind::DoWhile { body, .. }
-        | StatementKind::With { body, .. } => {
-            f(&body.inner);
+        StatementKind::While(data) => {
+            f(&data.body.inner);
         }
-        StatementKind::For { init, body, .. } => {
-            if let Some(ast::ForInit::Declaration(decl)) = init {
+        StatementKind::DoWhile(data) => {
+            f(&data.body.inner);
+        }
+        StatementKind::With(data) => {
+            f(&data.body.inner);
+        }
+        StatementKind::For(data) => {
+            if let Some(ast::ForInit::Declaration(decl)) = &data.init {
                 f(&decl.inner);
             }
-            f(&body.inner);
+            f(&data.body.inner);
         }
-        StatementKind::ForInOf { lhs, body, .. } => {
-            if let ast::ForInOfLhs::Declaration(declaration) = lhs {
+        StatementKind::ForInOf(data) => {
+            if let ast::ForInOfLhs::Declaration(declaration) = &data.lhs {
                 f(&declaration.inner);
             }
-            f(&body.inner);
+            f(&data.body.inner);
         }
         StatementKind::Switch(data) => {
             for case in &data.cases {
@@ -2121,8 +1966,8 @@ fn for_each_child_statement(
                 f(&finalizer.inner);
             }
         }
-        StatementKind::Labelled { item, .. } => {
-            f(&item.inner);
+        StatementKind::Labelled(data) => {
+            f(&data.item.inner);
         }
         // Don't recurse into function/class bodies (new var scopes)
         _ => {}
@@ -2554,16 +2399,16 @@ fn count_non_local_lex_declarations(scope: &Rc<RefCell<ast::ScopeData>>) -> usiz
     let mut count = 0;
     for child in &sd.children {
         match &child.inner {
-            ast::StatementKind::VariableDeclaration { kind, declarations } => {
+            ast::StatementKind::VariableDeclaration(vd) => {
                 use parser::DeclarationKind;
-                if *kind == DeclarationKind::Let || *kind == DeclarationKind::Const {
-                    for declaration in declarations {
+                if vd.kind == DeclarationKind::Let || vd.kind == DeclarationKind::Const {
+                    for declaration in &vd.declarations {
                         count_non_local_names_in_target(&declaration.target, &mut count);
                     }
                 }
             }
-            ast::StatementKind::UsingDeclaration { declarations } => {
-                for declaration in declarations {
+            ast::StatementKind::UsingDeclaration(declarations) => {
+                for declaration in declarations.iter() {
                     count_non_local_names_in_target(&declaration.target, &mut count);
                 }
             }
@@ -2645,4 +2490,54 @@ unsafe extern "C" {
         might_need_arguments_object: bool,
         contains_direct_call_to_eval: bool,
     );
+}
+
+/// C-compatible token info for the tokenize callback.
+#[repr(C)]
+pub struct FFIToken {
+    pub token_type: u8,
+    pub category: u8,
+    pub offset: u32,
+    pub length: u32,
+    pub trivia_offset: u32,
+    pub trivia_length: u32,
+}
+
+/// Tokenize a UTF-16 source string, calling `callback` for each token.
+///
+/// # Safety
+/// - `source` must point to a valid UTF-16 buffer of `source_len` elements.
+/// - `callback` must be a valid function pointer.
+/// - `ctx` is passed through to the callback.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rust_tokenize(
+    source: *const u16,
+    source_len: usize,
+    ctx: *mut c_void,
+    callback: unsafe extern "C" fn(ctx: *mut c_void, token: *const FFIToken),
+) {
+    unsafe {
+        abort_on_panic(|| {
+            let Some(source_slice) = source_from_raw(source, source_len) else {
+                return;
+            };
+            let mut lex = lexer::Lexer::new(source_slice, 1, 0);
+            loop {
+                let tok = lex.next();
+                let is_eof = tok.token_type == token::TokenType::Eof;
+                let ffi_tok = FFIToken {
+                    token_type: tok.token_type as u8,
+                    category: tok.token_type.category() as u8,
+                    offset: tok.value_start,
+                    length: tok.value_len,
+                    trivia_offset: tok.trivia_start,
+                    trivia_length: tok.trivia_len,
+                };
+                callback(ctx, &raw const ffi_tok);
+                if is_eof {
+                    break;
+                }
+            }
+        });
+    }
 }

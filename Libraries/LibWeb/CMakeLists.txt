@@ -100,23 +100,26 @@ set(SOURCES
     CSS/Angle.cpp
     CSS/AnimationEvent.cpp
     CSS/BooleanExpression.cpp
-    CSS/CalculatedOr.cpp
     CSS/CascadedProperties.cpp
     CSS/Clip.cpp
     CSS/ComputedProperties.cpp
-    CSS/CustomPropertyData.cpp
+    CSS/ContainerQuery.cpp
     CSS/CountersSet.cpp
     CSS/CounterStyle.cpp
     CSS/CounterStyleDefinition.cpp
     CSS/CSS.cpp
     CSS/CSSAnimation.cpp
     CSS/CSSConditionRule.cpp
+    CSS/CSSContainerRule.cpp
     CSS/CSSCounterStyleRule.cpp
     CSS/CSSDescriptors.cpp
     CSS/CSSFontFaceDescriptors.cpp
     CSS/CSSFontFaceRule.cpp
     CSS/CSSFontFeatureValuesMap.cpp
     CSS/CSSFontFeatureValuesRule.cpp
+    CSS/CSSFunctionDeclarations.cpp
+    CSS/CSSFunctionDescriptors.cpp
+    CSS/CSSFunctionRule.cpp
     CSS/CSSGroupingRule.cpp
     CSS/CSSImageValue.cpp
     CSS/CSSImportRule.cpp
@@ -164,6 +167,7 @@ set(SOURCES
     CSS/CSSUnitValue.cpp
     CSS/CSSUnparsedValue.cpp
     CSS/CSSVariableReferenceValue.cpp
+    CSS/CustomPropertyData.cpp
     CSS/Descriptor.cpp
     CSS/Display.cpp
     CSS/EasingFunction.cpp
@@ -209,6 +213,7 @@ set(SOURCES
     CSS/Parser/Tokenizer.cpp
     CSS/Parser/Types.cpp
     CSS/Parser/ValueParsing.cpp
+    CSS/Percentage.cpp
     CSS/PreferredColorScheme.cpp
     CSS/PreferredContrast.cpp
     CSS/PreferredMotion.cpp
@@ -243,6 +248,7 @@ set(SOURCES
     CSS/StyleValues/BorderRadiusRectStyleValue.cpp
     CSS/StyleValues/CalculatedStyleValue.cpp
     CSS/StyleValues/ColorFunctionStyleValue.cpp
+    CSS/StyleValues/ColorInterpolationMethodStyleValue.cpp
     CSS/StyleValues/ColorMixStyleValue.cpp
     CSS/StyleValues/ColorSchemeStyleValue.cpp
     CSS/StyleValues/ColorStyleValue.cpp
@@ -283,6 +289,7 @@ set(SOURCES
     CSS/StyleValues/RadialGradientStyleValue.cpp
     CSS/StyleValues/RadialSizeStyleValue.cpp
     CSS/StyleValues/RandomValueSharingStyleValue.cpp
+    CSS/StyleValues/RatioStyleValue.cpp
     CSS/StyleValues/RectStyleValue.cpp
     CSS/StyleValues/RepeatStyleStyleValue.cpp
     CSS/StyleValues/ScrollbarColorStyleValue.cpp
@@ -314,6 +321,7 @@ set(SOURCES
     DOM/AbstractRange.cpp
     DOM/AccessibilityTreeNode.cpp
     DOM/AdoptedStyleSheets.cpp
+    DOM/AnchorNameMap.cpp
     DOM/Attr.cpp
     DOM/CDATASection.cpp
     DOM/CharacterData.cpp
@@ -721,6 +729,7 @@ set(SOURCES
     IndexedDB/Internal/Database.cpp
     IndexedDB/Internal/Index.cpp
     IndexedDB/Internal/Key.cpp
+    IndexedDB/Internal/MutationLog.cpp
     IndexedDB/Internal/ObjectStore.cpp
     IndexedDB/Internal/RequestList.cpp
     Infra/ByteSequences.cpp
@@ -752,7 +761,6 @@ set(SOURCES
     Layout/InlineFormattingContext.cpp
     Layout/InlineLevelIterator.cpp
     Layout/InlineNode.cpp
-    Layout/LabelableNode.cpp
     Layout/LayoutState.cpp
     Layout/LegendBox.cpp
     Layout/LineBox.cpp
@@ -805,6 +813,10 @@ set(SOURCES
     MediaSourceExtensions/MediaSourceHandle.cpp
     MediaSourceExtensions/SourceBuffer.cpp
     MediaSourceExtensions/SourceBufferList.cpp
+    MediaSourceExtensions/SourceBufferProcessor.cpp
+    MediaSourceExtensions/WebMByteStreamParser.cpp
+    MediaSourceExtensions/TrackBuffer.cpp
+    MediaSourceExtensions/TrackBufferDemuxer.cpp
     MimeSniff/MimeType.cpp
     MimeSniff/Resource.cpp
     MixedContent/AbstractOperations.cpp
@@ -819,6 +831,7 @@ set(SOURCES
     Page/EventHandler.cpp
     Page/InputEvent.cpp
     Page/Page.cpp
+    Page/SharedBackingStore.cpp
     Painting/AccumulatedVisualContext.cpp
     Painting/BackgroundPainting.cpp
     Painting/BackingStoreManager.cpp
@@ -839,7 +852,6 @@ set(SOURCES
     Painting/FieldSetPaintable.cpp
     Painting/GradientPainting.cpp
     Painting/ImagePaintable.cpp
-    Painting/LabelablePaintable.cpp
     Painting/MarkerPaintable.cpp
     Painting/NavigableContainerViewportPaintable.cpp
     Painting/Paintable.cpp
@@ -849,6 +861,8 @@ set(SOURCES
     Painting/PaintableWithLines.cpp
     Painting/RadioButtonPaintable.cpp
     Painting/ResolvedCSSFilter.cpp
+    Painting/ResizeHandle.cpp
+    Painting/Scrollbar.cpp
     Painting/ScrollFrame.cpp
     Painting/ScrollState.cpp
     Painting/ShadowPainting.cpp
@@ -887,9 +901,11 @@ set(SOURCES
     ResourceTiming/PerformanceResourceTiming.cpp
     SecureContexts/AbstractOperations.cpp
     Selection/Selection.cpp
+    ServiceWorker/Cache.cpp
     ServiceWorker/CacheStorage.cpp
     ServiceWorker/EventNames.cpp
     ServiceWorker/Job.cpp
+    ServiceWorker/NameToCacheMap.cpp
     ServiceWorker/Registration.cpp
     ServiceWorker/ServiceWorker.cpp
     ServiceWorker/ServiceWorkerContainer.cpp
@@ -1144,9 +1160,12 @@ set(SOURCES
     WebSockets/WebSocket.cpp
     WebVTT/VTTCue.cpp
     WebVTT/VTTRegion.cpp
+    WebXR/XRLayer.cpp
+    WebXR/XRRenderState.cpp
     WebXR/XRSession.cpp
     WebXR/XRSessionEvent.cpp
     WebXR/XRSystem.cpp
+    WebXR/XRWebGLLayer.cpp
     Worker/WebWorkerClient.cpp
     XHR/EventNames.cpp
     XHR/FormData.cpp

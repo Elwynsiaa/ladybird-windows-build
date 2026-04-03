@@ -71,7 +71,7 @@ WebIDL::ExceptionOr<GC::Ptr<JavaScriptModuleScript>> JavaScriptModuleScript::cre
     return script;
 }
 
-WebIDL::ExceptionOr<GC::Ptr<JavaScriptModuleScript>> JavaScriptModuleScript::create_from_pre_parsed(ByteString const& filename, NonnullRefPtr<JS::SourceCode const> source_code, JS::Realm& realm, URL::URL base_url, RustParsedProgram* parsed)
+WebIDL::ExceptionOr<GC::Ptr<JavaScriptModuleScript>> JavaScriptModuleScript::create_from_pre_parsed(ByteString const& filename, NonnullRefPtr<JS::SourceCode const> source_code, JS::Realm& realm, URL::URL base_url, JS::FFI::ParsedProgram* parsed)
 {
     auto script = realm.create<JavaScriptModuleScript>(move(base_url), filename, realm);
 
@@ -125,7 +125,7 @@ JS::Promise* JavaScriptModuleScript::run(PreventErrorReporting)
         // NON-STANDARD: To ensure that LibJS can find the module on the stack, we push a new execution context.
         auto& stack = vm().interpreter_stack();
         auto* stack_mark = stack.top();
-        auto* module_execution_context = stack.allocate(0, 0, 0);
+        auto* module_execution_context = stack.allocate(0, ReadonlySpan<JS::Value> {}, 0);
         VERIFY(module_execution_context);
         module_execution_context->realm = &realm;
         module_execution_context->script_or_module = GC::Ref<JS::Module> { *record };

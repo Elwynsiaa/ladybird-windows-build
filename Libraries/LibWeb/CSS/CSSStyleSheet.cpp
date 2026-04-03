@@ -323,7 +323,7 @@ void CSSStyleSheet::for_each_effective_keyframes_at_rule(Function<void(CSSKeyfra
     });
 }
 
-void CSSStyleSheet::for_each_counter_style_at_rule(Function<void(CSSCounterStyleRule const&)> const& callback) const
+void CSSStyleSheet::for_each_effective_counter_style_at_rule(Function<void(CSSCounterStyleRule const&)> const& callback) const
 {
     for_each_effective_rule(TraversalOrder::Preorder, [&](CSSRule const& rule) {
         if (rule.type() == CSSRule::Type::CounterStyle)
@@ -381,6 +381,15 @@ GC::Ptr<DOM::Document> CSSStyleSheet::owning_document() const
         return element->document();
 
     return nullptr;
+}
+
+void CSSStyleSheet::load_pending_image_resources(DOM::Document& document)
+{
+    auto pending = move(m_pending_image_values);
+    for (auto const& weak_image_value : pending) {
+        if (auto* image_value = weak_image_value.ptr())
+            image_value->load_any_resources(document);
+    }
 }
 
 bool CSSStyleSheet::evaluate_media_queries(DOM::Document const& document)

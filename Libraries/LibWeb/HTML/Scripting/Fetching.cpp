@@ -25,6 +25,7 @@
 #include <LibWeb/Fetch/Infrastructure/HTTP/Requests.h>
 #include <LibWeb/Fetch/Infrastructure/HTTP/Responses.h>
 #include <LibWeb/Fetch/Infrastructure/URL.h>
+#include <LibWeb/HTML/EventLoop/EventLoop.h>
 #include <LibWeb/HTML/HTMLScriptElement.h>
 #include <LibWeb/HTML/PotentialCORSRequest.h>
 #include <LibWeb/HTML/Scripting/ClassicScript.h>
@@ -40,14 +41,14 @@ namespace Web::HTML {
 
 // Submit a parse_program() call to the thread pool, then bounce back to
 // the main thread via deferred_invoke once parsing completes.
-// `on_parsed` is called on the main thread with the RustParsedProgram*
+// `on_parsed` is called on the main thread with the Rust ParsedProgram*
 // and the SourceCode.
 // NB: The SourceCode stays on the main thread (inside the heap-allocated
 //     callback). The worker thread only receives raw UTF-16 data pointers.
 //     The callback is heap-allocated so that if the event loop is
 //     destroyed during parsing, we leak it (and any GC::Root objects it
 //     captures) rather than destroying them on the worker thread.
-static void parse_off_thread(NonnullRefPtr<JS::SourceCode const> source_code, JS::RustIntegration::ProgramType type, size_t line_number_offset, Function<void(RustParsedProgram*, NonnullRefPtr<JS::SourceCode const>)> on_parsed)
+static void parse_off_thread(NonnullRefPtr<JS::SourceCode const> source_code, JS::RustIntegration::ProgramType type, size_t line_number_offset, Function<void(JS::FFI::ParsedProgram*, NonnullRefPtr<JS::SourceCode const>)> on_parsed)
 {
     // Extract the raw data the parser needs while still on the main thread.
     auto const* utf16_data = source_code->utf16_data();
@@ -55,8 +56,8 @@ static void parse_off_thread(NonnullRefPtr<JS::SourceCode const> source_code, JS
 
     // Capture source_code in the callback so it stays alive (on the main
     // thread) for the duration of parsing and is available when we compile.
-    auto* callback = new Function<void(RustParsedProgram*)>(
-        [on_parsed = move(on_parsed), source_code = move(source_code)](RustParsedProgram* parsed) mutable {
+    auto* callback = new Function<void(JS::FFI::ParsedProgram*)>(
+        [on_parsed = move(on_parsed), source_code = move(source_code)](JS::FFI::ParsedProgram* parsed) mutable {
             on_parsed(parsed, move(source_code));
         });
 
@@ -73,6 +74,10 @@ static void parse_off_thread(NonnullRefPtr<JS::SourceCode const> source_code, JS
         origin->deferred_invoke([parsed, callback]() {
             (*callback)(parsed);
             delete callback;
+            // AD-HOC: Perform a microtask checkpoint so that any microtasks queued by the callback (e.g. promise
+            //         reactions from react_to_promise during module linking) are drained. Without this, module worker
+            //         scripts would stall because their promise chains never resolve.
+            perform_a_microtask_checkpoint();
         });
     });
 }
@@ -362,7 +367,7 @@ ScriptFetchOptions get_descendant_script_fetch_options(ScriptFetchOptions const&
 String resolve_a_module_integrity_metadata(URL::URL const& url, EnvironmentSettingsObject& settings_object)
 {
     // 1. Let map be settingsObject's global object's import map.
-    auto map = as<UniversalGlobalScopeMixin>(settings_object.global_object()).import_map();
+    auto map = settings_object.universal_global_scope().import_map();
 
     // 2. If map's integrity[url] does not exist, then return the empty string.
     // 3. Return map's integrity[url].

@@ -9,7 +9,6 @@
  */
 
 #include <LibGC/DeferGC.h>
-#include <LibJS/AST.h>
 #include <LibJS/Module.h>
 #include <LibJS/Runtime/Array.h>
 #include <LibJS/Runtime/Environment.h>
@@ -305,7 +304,7 @@ void initialize_main_thread_vm(AgentType type)
                 // FIXME: We need to setup a dummy execution context in case a JS::NativeFunction is called when processing the job.
                 //        This is because JS::NativeFunction::call excepts something to be on the execution context stack to be able to get the caller context to initialize the environment.
                 //        Do note that the JS spec gives _no_ guarantee that the execution context stack has something on it if HostEnqueuePromiseJob was called with a null realm: https://tc39.es/ecma262/#job-preparedtoevaluatecode
-                dummy_execution_context = JS::ExecutionContext::create(0, 0, 0);
+                dummy_execution_context = JS::ExecutionContext::create(0, ReadonlySpan<JS::Value> {}, 0);
                 dummy_execution_context->script_or_module = script_or_module;
                 vm.push_execution_context(*dummy_execution_context);
             }
@@ -333,6 +332,10 @@ void initialize_main_thread_vm(AgentType type)
         }));
     };
 
+    s_main_thread_vm->host_promise_job_queue_is_empty = []() -> bool {
+        return HTML::main_thread_event_loop().microtask_queue_empty();
+    };
+
     // 8.1.5.4.4 HostMakeJobCallback(callable), https://html.spec.whatwg.org/multipage/webappapis.html#hostmakejobcallback
     // https://whatpr.org/html/9893/webappapis.html#hostmakejobcallback
     s_main_thread_vm->host_make_job_callback = [](JS::FunctionObject& callable) -> GC::Ref<JS::JobCallback> {
@@ -348,7 +351,7 @@ void initialize_main_thread_vm(AgentType type)
         // 4. If active script is not null, set script execution context to a new JavaScript execution context, with its Function field set to null,
         //    its Realm field set to active script's realm, and its ScriptOrModule set to active script's record.
         if (script) {
-            script_execution_context = JS::ExecutionContext::create(0, 0, 0);
+            script_execution_context = JS::ExecutionContext::create(0, ReadonlySpan<JS::Value> {}, 0);
             script_execution_context->function = nullptr;
             script_execution_context->realm = &script->realm();
             if (is<HTML::ClassicScript>(script)) {
@@ -627,7 +630,7 @@ void initialize_main_thread_vm(AgentType type)
 
             auto& stack = vm.interpreter_stack();
             auto* stack_mark = stack.top();
-            auto* module_execution_context = stack.allocate(0, 0, 0);
+            auto* module_execution_context = stack.allocate(0, ReadonlySpan<JS::Value> {}, 0);
             VERIFY(module_execution_context);
             module_execution_context->realm = realm;
             if (module)

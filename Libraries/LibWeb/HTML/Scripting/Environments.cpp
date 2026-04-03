@@ -19,6 +19,7 @@
 #include <LibWeb/HTML/Scripting/Environments.h>
 #include <LibWeb/HTML/Scripting/ExceptionReporter.h>
 #include <LibWeb/HTML/Scripting/WindowEnvironmentSettingsObject.h>
+#include <LibWeb/HTML/UniversalGlobalScope.h>
 #include <LibWeb/HTML/Window.h>
 #include <LibWeb/HTML/WorkerGlobalScope.h>
 #include <LibWeb/Page/Page.h>
@@ -42,8 +43,6 @@ void Environment::visit_edges(Cell::Visitor& visitor)
 EnvironmentSettingsObject::EnvironmentSettingsObject(NonnullOwnPtr<JS::ExecutionContext> realm_execution_context)
     : m_realm_execution_context(move(realm_execution_context))
 {
-    m_realm_execution_context->context_owner = this;
-
     // Register with the responsible event loop so we can perform step 4 of "perform a microtask checkpoint".
     responsible_event_loop().register_environment_settings_object({}, *this);
 }
@@ -58,6 +57,7 @@ void EnvironmentSettingsObject::initialize(JS::Realm& realm)
 {
     Base::initialize(realm);
     m_module_map = realm.heap().allocate<ModuleMap>();
+    m_universal_global_scope = &as<UniversalGlobalScopeMixin>(global_object());
 }
 
 void EnvironmentSettingsObject::visit_edges(Cell::Visitor& visitor)
@@ -111,6 +111,11 @@ JS::Object& EnvironmentSettingsObject::global_object()
     return realm().global_object();
 }
 
+UniversalGlobalScopeMixin& EnvironmentSettingsObject::universal_global_scope()
+{
+    return *m_universal_global_scope;
+}
+
 // https://html.spec.whatwg.org/multipage/webappapis.html#responsible-event-loop
 EventLoop& EnvironmentSettingsObject::responsible_event_loop()
 {
@@ -128,13 +133,10 @@ EventLoop& EnvironmentSettingsObject::responsible_event_loop()
 // https://whatpr.org/html/9893/webappapis.html#check-if-we-can-run-script
 RunScriptDecision can_run_script(JS::Realm const& realm)
 {
-    // 1. If the global object specified by realm is a Window object whose Document object is not fully active, then return "do not run".
-    if (auto const* window = as_if<HTML::Window>(realm.global_object())) {
-        auto const& document = window->associated_document();
-        // AD-HOC: We allow tasks for destroyed documents to run so that microtasks queued during the fetch of a new
-        //         document in a navigation can still be processed, even after the previous document, the one that
-        //         initiated the fetch, has been destroyed.
-        if (!document.has_been_destroyed() && !document.is_fully_active())
+    // 1. If the global object specified by realm is a Window object whose Document object is not fully active, then
+    //    return "do not run".
+    if (auto const* window = as_if<Window>(realm.global_object())) {
+        if (!window->associated_document().is_fully_active())
             return RunScriptDecision::DoNotRun;
     }
 
@@ -525,8 +527,14 @@ JS::Realm& entry_realm()
 
     // With this in hand, we define the entry execution context to be the most recently pushed item in the JavaScript execution context stack that is a realm execution context.
     // The entry realm is the principal realm of the entry execution context's Realm component.
-    // NOTE: Currently all execution contexts in LibJS are realm execution contexts
-    return principal_realm(*vm.running_execution_context().realm);
+    auto entry_execution_context = vm.execution_context_stack().last_matching([](JS::ExecutionContext* context) {
+        if (!context->realm)
+            return false;
+        return &principal_realm_settings_object(*context->realm).realm_execution_context() == context;
+    });
+
+    VERIFY(entry_execution_context.has_value());
+    return *entry_execution_context.value()->realm;
 }
 
 // https://html.spec.whatwg.org/multipage/webappapis.html#entry-settings-object

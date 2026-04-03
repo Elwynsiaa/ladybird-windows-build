@@ -51,6 +51,10 @@ public:
     {
         return PlaybackState::Seeking;
     }
+    virtual bool has_future_data() override
+    {
+        return false;
+    }
 
     virtual void enter_buffering() override { }
     virtual void exit_buffering() override { }
@@ -110,6 +114,8 @@ private:
 
     static size_t count_audio_tracks(PlaybackManager& manager)
     {
+        if (!manager.m_audio_sink)
+            return 0;
         size_t count = 0;
         for (auto const& audio_track_data : manager.m_audio_track_datas) {
             if (manager.m_audio_sink->provider(audio_track_data.track) == nullptr)
@@ -122,6 +128,8 @@ private:
     static void begin_audio_seeks(SeekData& seek_data)
     {
         if (!seek_data.manager)
+            return;
+        if (!seek_data.manager->m_audio_sink)
             return;
 
         seek_data.audio_seeks_in_flight = count_audio_tracks(*seek_data.manager);
