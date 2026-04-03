@@ -1,7 +1,9 @@
 name: Build win32 (.exe)
 
 on:
-  workflow_dispatch: # This allows you to trigger the build manually
+  push:
+    branches: [ "master", "main" ] # Automates release on commit
+  workflow_dispatch: # Allows you to trigger the build manually
 
 env:
   LADYBIRD_SOURCE_DIR: ${{ github.workspace }}
@@ -13,6 +15,8 @@ jobs:
   build-windows:
     name: Windows Release Build
     runs-on: windows-latest
+    permissions:
+      contents: write # Needed to create GitHub releases!
     defaults:
       run:
         shell: pwsh
@@ -107,11 +111,46 @@ jobs:
           Remove-Item -Path "$installDir/include" -Recurse -Force -ErrorAction SilentlyContinue
           Remove-Item -Path "$installDir/lib" -Recurse -Force -ErrorAction SilentlyContinue
 
+      # --- New Release Steps Start Here ---
+
+      - name: Zip Release Artifacts
+        run: |
+          # Zip everything inside the Install folder
+          Compress-Archive -Path ${{ github.workspace }}/Install/* -DestinationPath Ladybird-Windows-Release.zip -Force
+        shell: pwsh
+
       - name: Upload Windows Artifact
         uses: actions/upload-artifact@v4
         with:
           name: Ladybird-Windows-Release
-          path: ${{ github.workspace }}/Install
+          path: Ladybird-Windows-Release.zip
+          if-no-files-found: error
+
+      - name: Set Release Variables
+        id: set_vars
+        run: |
+          $releaseDate = Get-Date -Format "yyyyMMdd"
+          $releaseTag = "v${releaseDate}-${{ github.run_number }}"
+          $releaseName = "Release ${releaseDate} (Run ${{ github.run_number }})"
+          echo "RELEASE_TAG=$releaseTag" >> $env:GITHUB_ENV
+          echo "RELEASE_NAME=$releaseName" >> $env:GITHUB_ENV
+        shell: pwsh
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tag_name: ${{ env.RELEASE_TAG }}
+          name: ${{ env.RELEASE_NAME }}
+          body: |
+            Automated release triggered by commit ${{ github.sha }}.
+          draft: false
+          prerelease: false
+          files: |
+            Ladybird-Windows-Release.zip
+
+      # --- New Release Steps End Here ---
 
       - name: Save Caches
         uses: ./.github/actions/cache-save
