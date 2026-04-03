@@ -1,3 +1,7 @@
+# Ladybird windows releases. Run bin\ladybird.exe to start.
+<img width="1920" height="1040" alt="" src="https://github.com/user-attachments/assets/62e81356-e483-4fdd-8548-4d6499b252e9" />
+
+
 # Ladybird
 
 [Ladybird](https://ladybird.org) is a truly independent web browser, using a novel engine based on web standards.
