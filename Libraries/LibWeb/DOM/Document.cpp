@@ -485,7 +485,7 @@ GC::Ref<Document> Document::construct_impl(JS::Realm& realm)
 {
     // The new Document() constructor steps are to set this’s origin to the origin of current global object’s associated Document. [HTML]
     auto document = Document::create(realm);
-    document->set_origin(as<HTML::Window>(HTML::current_principal_global_object()).associated_document().origin());
+    document->set_origin(as<HTML::Window>(HTML::current_global_object()).associated_document().origin());
     return document;
 }
 
@@ -955,6 +955,7 @@ bool Document::is_child_allowed(Node const& node) const
     case NodeType::TEXT_NODE:
         return false;
     case NodeType::COMMENT_NODE:
+    case NodeType::PROCESSING_INSTRUCTION_NODE:
         return true;
     case NodeType::DOCUMENT_TYPE_NODE:
         return !first_child_of_type<DocumentType>();
@@ -1799,9 +1800,6 @@ void Document::update_style()
     style_computer().reset_ancestor_filter();
 
     build_registered_properties_cache();
-
-    // FIXME: We don't need to rebuild this cache on every style update, just if a @counter-style rule has changed.
-    build_counter_style_cache();
 
     auto invalidation = update_style_recursively(*this, style_computer(), false, false, false);
     if (!invalidation.is_none())
@@ -4549,6 +4547,15 @@ void Document::run_unloading_cleanup_steps()
         window.clear_map_of_active_timers();
     }
 
+    // https://w3c.github.io/IndexedDB/#database-connection
+    // If the execution context where the connection was created is destroyed
+    // (for example due to the user navigating away from that page), the connection is closed.
+    // AD-HOC: We have no way to detect when the execution context that created the connection is destroyed, and
+    //         making LibJS notify us of that would undoubtedly be very costly to performance. All other browsers also
+    //         opt not to follow the spec exactly in regards to this, instead letting the connection stay open until
+    //         GC collects it. However, we need to be proactive about this when navigating for the sake of test-web.
+    window.close_all_idb_connections();
+
     FileAPI::run_unloading_cleanup_steps(*this);
     fully_exit_fullscreen();
 }
@@ -6659,6 +6666,14 @@ void Document::for_each_active_css_style_sheet(Function<void(CSS::CSSStyleSheet&
     }
 }
 
+HashMap<FlyString, NonnullRefPtr<CSS::CounterStyle const>> const& Document::registered_counter_styles() const
+{
+    if (m_needs_counter_style_cache_update)
+        const_cast<Document&>(*this).build_counter_style_cache();
+
+    return m_registered_counter_styles;
+}
+
 double Document::ensure_element_shared_css_random_base_value(CSS::RandomCachingKey const& random_caching_key)
 {
     return m_element_shared_css_random_base_value_cache.ensure(random_caching_key, []() {
@@ -7261,7 +7276,7 @@ WebIDL::ExceptionOr<GC::Root<DOM::Document>> Document::parse_html_unsafe(JS::VM&
     //    TrustedHTML, this's relevant global object, html, "Document parseHTMLUnsafe", and "script".
     auto const compliant_html = TRY(TrustedTypes::get_trusted_type_compliant_string(
         TrustedTypes::TrustedTypeName::TrustedHTML,
-        HTML::current_principal_global_object(),
+        HTML::current_global_object(),
         html,
         TrustedTypes::InjectionSink::Document_parseHTMLUnsafe,
         TrustedTypes::Script.to_string()));
@@ -7354,7 +7369,10 @@ GC::Ptr<HTML::Navigable> Document::navigable() const
 
 void Document::set_navigable(GC::Ptr<HTML::Navigable> navigable)
 {
+    if (m_navigable == navigable)
+        return;
     m_navigable = navigable.ptr();
+    HTML::main_thread_event_loop().document_navigable_did_change({});
 }
 
 void Document::notify_css_background_image_loaded()
@@ -7384,33 +7402,21 @@ void Document::set_needs_repaint(InvalidateDisplayList should_invalidate_display
     if (!navigable)
         return;
 
+    navigable->set_needs_repaint();
+
     if (navigable->is_traversable()) {
-        navigable->traversable_navigable()->set_needs_repaint();
         Web::HTML::main_thread_event_loop().schedule();
         return;
     }
 
     if (auto container = navigable->container()) {
-        container->document().set_needs_repaint(should_invalidate_display_list);
+        container->document().set_needs_repaint(InvalidateDisplayList::No);
     }
 }
 
 void Document::invalidate_display_list()
 {
     m_cached_display_list.clear();
-
-    auto navigable = this->navigable();
-    if (!navigable)
-        return;
-
-    if (auto container = navigable->container()) {
-        // The container's paintable may have cached paint commands that include a PaintNestedDisplayList
-        // holding a stale reference to this document's old display list. Clear the cache so the container
-        // re-executes paint() and picks up the freshly recorded display list.
-        if (auto* paintable_box = container->unsafe_paintable_box())
-            paintable_box->invalidate_paint_cache();
-        container->document().invalidate_display_list();
-    }
 }
 
 RefPtr<Painting::DisplayList> Document::cached_display_list() const
@@ -7426,7 +7432,7 @@ RefPtr<Painting::DisplayList> Document::record_display_list(HTML::PaintConfig co
     update_paint_and_hit_testing_properties_if_needed();
     VERIFY(paintable());
 
-    auto display_list = Painting::DisplayList::create(*paintable()->visual_context_tree());
+    auto display_list = Painting::DisplayList::create(paintable()->visual_context_tree());
     Painting::DisplayListRecorder display_list_recorder(display_list);
 
     // https://drafts.csswg.org/css-color-adjust-1/#color-scheme-effect
@@ -8296,6 +8302,8 @@ void Document::build_counter_style_cache()
             --i;
         }
     }
+
+    m_needs_counter_style_cache_update = false;
 }
 
 StringView to_string(SetNeedsLayoutReason reason)

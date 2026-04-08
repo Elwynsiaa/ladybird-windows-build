@@ -27,9 +27,10 @@ Paintable::Paintable(Layout::Node const& layout_node)
     : m_layout_node(layout_node)
 {
     auto& computed_values = layout_node.computed_values();
-    if (layout_node.is_grid_item() && computed_values.z_index().has_value()) {
-        // https://www.w3.org/TR/css-grid-2/#z-order
-        // grid items with z_index should behave as if position were "relative"
+    if ((layout_node.is_flex_item() || layout_node.is_grid_item()) && computed_values.z_index().has_value()) {
+        // https://drafts.csswg.org/css-flexbox-1/#painting
+        // https://drafts.csswg.org/css-grid-2/#z-order
+        // Flex and grid items with z-index values other than "auto" behave as if position were "relative".
         m_positioned = true;
     } else {
         m_positioned = computed_values.position() != CSS::Positioning::Static;
@@ -155,13 +156,13 @@ void Paintable::paint_inspector_overlay(DisplayListRecordingContext& context) co
         paintable_box = first_ancestor_of_type<PaintableBox>();
 
     if (paintable_box) {
-        auto* visual_context_tree = const_cast<ViewportPaintable*>(document().paintable())->visual_context_tree();
+        auto& visual_context_tree = const_cast<ViewportPaintable*>(document().paintable())->visual_context_tree();
         auto visual_context_index = paintable_box->accumulated_visual_context_index();
 
-        if (visual_context_tree && visual_context_index.value()) {
+        if (visual_context_index.value()) {
             Vector<VisualContextIndex> relevant_indices;
-            for (auto i = visual_context_index; i.value(); i = visual_context_tree->node_at(i).parent_index) {
-                auto should_keep = visual_context_tree->node_at(i).data.visit(
+            for (auto i = visual_context_index; i.value(); i = visual_context_tree.node_at(i).parent_index) {
+                auto should_keep = visual_context_tree.node_at(i).data.visit(
                     [](ScrollData const&) { return true; },
                     [](ClipData const&) { return false; },
                     [](TransformData const&) { return true; },
@@ -174,7 +175,7 @@ void Paintable::paint_inspector_overlay(DisplayListRecordingContext& context) co
 
             VisualContextIndex overlay_visual_context_index {};
             for (auto const& source_visual_context_index : relevant_indices.in_reverse())
-                overlay_visual_context_index = visual_context_tree->append(visual_context_tree->node_at(source_visual_context_index).data, overlay_visual_context_index);
+                overlay_visual_context_index = visual_context_tree.append(visual_context_tree.node_at(source_visual_context_index).data, overlay_visual_context_index);
 
             if (overlay_visual_context_index.value())
                 display_list_recorder.set_accumulated_visual_context(overlay_visual_context_index);

@@ -22,7 +22,6 @@
 namespace Web::CSS {
 
 class CSSImportRule;
-class FontLoader;
 
 struct CSSStyleSheetInit {
     Optional<String> base_url {};
@@ -95,6 +94,7 @@ public:
     void remove_owning_document_or_shadow_root(DOM::Node& document_or_shadow_root);
     void invalidate_owners(DOM::StyleInvalidationReason);
     GC::Ptr<DOM::Document> owning_document() const;
+    void set_disabled(bool);
 
     Optional<FlyString> default_namespace() const;
     GC::Ptr<CSSNamespaceRule> default_namespace_rule() const { return m_default_namespace_rule; }
@@ -119,12 +119,6 @@ public:
 
     void set_source_text(String);
     Optional<String> source_text(Badge<DOM::Document>) const;
-
-    void add_associated_font_loader(GC::Ref<FontLoader const> font_loader)
-    {
-        m_associated_font_loaders.append(font_loader);
-    }
-    bool has_associated_font_loader(FontLoader& font_loader) const;
 
     void add_critical_subresource(Subresource&);
     void remove_critical_subresource(Subresource&);
@@ -159,8 +153,6 @@ private:
     bool m_constructed { false };
     bool m_disallow_modification { false };
     Optional<bool> m_did_match;
-
-    Vector<GC::Ptr<FontLoader const>> m_associated_font_loaders;
 
     Vector<Subresource&> m_critical_subresources;
 

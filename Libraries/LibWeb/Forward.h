@@ -52,7 +52,6 @@ class SVGPatternPaintStyle;
 class ScrollStateSnapshot;
 using PaintStyle = RefPtr<SVGPaintServerPaintStyle>;
 using PaintStyleOrColor = Variant<PaintStyle, Gfx::Color>;
-using ScrollStateSnapshotByDisplayList = HashMap<NonnullRefPtr<DisplayList>, ScrollStateSnapshot>;
 
 }
 
@@ -887,7 +886,6 @@ struct SerializedPolicyContainer;
 struct SerializedTransferRecord;
 struct SourceSnapshotParams;
 struct StructuredSerializeOptions;
-struct SyntheticRealmSettings;
 struct ToggleTaskTracker;
 
 }
@@ -1299,6 +1297,7 @@ class Instance;
 class Memory;
 class Module;
 class Table;
+class WebAssemblyModule;
 
 }
 

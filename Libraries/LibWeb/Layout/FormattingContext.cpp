@@ -296,9 +296,8 @@ CSSPixels FormattingContext::greatest_child_width(Box const& box) const
 {
     CSSPixels max_width = 0;
     if (box.children_are_inline()) {
-        for (auto& line_box : m_state.get(box).line_boxes) {
-            max_width = max(max_width, line_box.width());
-        }
+        for (auto& line_box : m_state.get(box).line_boxes)
+            max_width = max(max_width, line_box_physical_width(box, line_box));
     } else {
         box.for_each_child_of_type<Box>([&](Box const& child) {
             if (!child.is_absolutely_positioned())
@@ -307,6 +306,28 @@ CSSPixels FormattingContext::greatest_child_width(Box const& box) const
         });
     }
     return max_width;
+}
+
+CSSPixels FormattingContext::line_box_physical_width(Box const& box, LineBox const& line_box)
+{
+    if (box.computed_values().writing_mode() == CSS::WritingMode::HorizontalTb)
+        return line_box.width();
+
+    CSSPixels leftmost_fragment_x = 0;
+    CSSPixels rightmost_fragment_x = 0;
+    bool saw_fragment = false;
+    for (auto const& fragment : line_box.fragments()) {
+        auto fragment_left = fragment.offset().x();
+        auto fragment_right = fragment_left + fragment.width();
+        leftmost_fragment_x = saw_fragment ? min(leftmost_fragment_x, fragment_left) : fragment_left;
+        rightmost_fragment_x = saw_fragment ? max(rightmost_fragment_x, fragment_right) : fragment_right;
+        saw_fragment = true;
+    }
+
+    if (!saw_fragment)
+        return 0;
+
+    return rightmost_fragment_x - leftmost_fragment_x;
 }
 
 FormattingContext::ShrinkToFitResult FormattingContext::calculate_shrink_to_fit_widths(Box const& box)
@@ -322,22 +343,12 @@ CSSPixelSize FormattingContext::solve_replaced_size_constraint(CSSPixels input_w
     // 10.4 Minimum and maximum widths: 'min-width' and 'max-width'
     // https://www.w3.org/TR/CSS22/visudet.html#min-max-widths
 
-    auto containing_block = box.containing_block();
-    while (containing_block && containing_block->is_anonymous() && !containing_block->display().is_table_cell())
-        containing_block = containing_block->containing_block();
-    CSSPixels width_of_containing_block = 0;
-    CSSPixels height_of_containing_block = 0;
-    if (auto const* containing_block_used_values = containing_block ? m_state.try_get(*containing_block) : nullptr) {
-        width_of_containing_block = containing_block_used_values->content_width();
-        height_of_containing_block = containing_block_used_values->content_height();
-    }
-
-    auto min_width = box.computed_values().min_width().is_auto() ? 0 : box.computed_values().min_width().to_px(box, width_of_containing_block);
-    auto specified_max_width = should_treat_max_width_as_none(box, available_space.width) ? input_width : box.computed_values().max_width().to_px(box, width_of_containing_block);
+    auto min_width = box.computed_values().min_width().is_auto() ? 0 : calculate_inner_width(box, available_space.width, box.computed_values().min_width());
+    auto specified_max_width = should_treat_max_width_as_none(box, available_space.width) ? input_width : calculate_inner_width(box, available_space.width, box.computed_values().max_width());
     auto max_width = max(min_width, specified_max_width);
 
-    auto min_height = box.computed_values().min_height().is_auto() ? 0 : box.computed_values().min_height().to_px(box, height_of_containing_block);
-    auto specified_max_height = should_treat_max_height_as_none(box, available_space.height) ? input_height : box.computed_values().max_height().to_px(box, height_of_containing_block);
+    auto min_height = box.computed_values().min_height().is_auto() ? 0 : calculate_inner_height(box, available_space, box.computed_values().min_height());
+    auto specified_max_height = should_treat_max_height_as_none(box, available_space.height) ? input_height : calculate_inner_height(box, available_space, box.computed_values().max_height());
     auto max_height = max(min_height, specified_max_height);
 
     CSSPixelFraction aspect_ratio = *box.preferred_aspect_ratio();
@@ -604,8 +615,6 @@ CSSPixels FormattingContext::compute_width_for_replaced_element(Box const& box, 
     // 10.3.4 Block-level, replaced elements in normal flow...
     // 10.3.2 Inline, replaced elements
 
-    auto width_of_containing_block = available_space.width.to_px_or_zero();
-
     auto computed_width = should_treat_width_as_auto(box, available_space) ? CSS::Size::make_auto() : box.computed_values().width();
     auto computed_height = should_treat_height_as_auto(box, available_space) ? CSS::Size::make_auto() : box.computed_values().height();
 
@@ -622,18 +631,18 @@ CSSPixels FormattingContext::compute_width_for_replaced_element(Box const& box, 
     //    but this time using the computed value of 'max-width' as the computed value for 'width'.
     if (!should_treat_max_width_as_none(box, available_space.width)) {
         auto const& computed_max_width = box.computed_values().max_width();
-        if (used_width > computed_max_width.to_px(box, width_of_containing_block)) {
+        auto max_width = calculate_inner_width(box, available_space.width, computed_max_width);
+        if (used_width > max_width)
             used_width = tentative_width_for_replaced_element(box, computed_max_width, available_space);
-        }
     }
 
     // 3. If the resulting width is smaller than 'min-width', the rules above are applied again,
     //    but this time using the value of 'min-width' as the computed value for 'width'.
     auto computed_min_width = box.computed_values().min_width();
     if (!computed_min_width.is_auto()) {
-        if (used_width < computed_min_width.to_px(box, width_of_containing_block)) {
+        auto min_width = calculate_inner_width(box, available_space.width, computed_min_width);
+        if (used_width < min_width)
             used_width = tentative_width_for_replaced_element(box, computed_min_width, available_space);
-        }
     }
 
     return used_width;
@@ -676,12 +685,6 @@ CSSPixels FormattingContext::compute_height_for_replaced_element(Box const& box,
     // 10.6.6 Floating replaced elements
     // 10.6.10 'inline-block' replaced elements in normal flow
 
-    auto containing_block = box.containing_block();
-    while (containing_block && containing_block->is_anonymous() && !containing_block->display().is_table_cell())
-        containing_block = containing_block->containing_block();
-    CSSPixels height_of_containing_block = 0;
-    if (auto const* containing_block_used_values = containing_block ? m_state.try_get(*containing_block) : nullptr)
-        height_of_containing_block = containing_block_used_values->content_height();
     auto computed_width = should_treat_width_as_auto(box, available_space) ? CSS::Size::make_auto() : box.computed_values().width();
     auto computed_height = should_treat_height_as_auto(box, available_space) ? CSS::Size::make_auto() : box.computed_values().height();
 
@@ -705,18 +708,18 @@ CSSPixels FormattingContext::compute_height_for_replaced_element(Box const& box,
     //    but this time using the value of 'max-height' as the computed value for 'height'.
     if (!should_treat_max_height_as_none(box, available_space.height)) {
         auto const& computed_max_height = box.computed_values().max_height();
-        if (used_height > computed_max_height.to_px(box, height_of_containing_block)) {
+        auto max_height = calculate_inner_height(box, available_space, computed_max_height);
+        if (used_height > max_height)
             used_height = tentative_height_for_replaced_element(box, computed_max_height, available_space);
-        }
     }
 
     // 3. If the resulting height is smaller than 'min-height', the rules above are applied again,
     //    but this time using the value of 'min-height' as the computed value for 'height'.
     auto computed_min_height = box.computed_values().min_height();
     if (!computed_min_height.is_auto()) {
-        if (used_height < computed_min_height.to_px(box, height_of_containing_block)) {
+        auto min_height = calculate_inner_height(box, available_space, computed_min_height);
+        if (used_height < min_height)
             used_height = tentative_height_for_replaced_element(box, computed_min_height, available_space);
-        }
     }
 
     return used_height;
